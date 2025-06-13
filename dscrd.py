@@ -97,6 +97,7 @@ async def answer(interaction: discord.Interaction, pregunta: str):
         )
         mensaje_respuesta = respuesta['choices'][0]['message']['content']
     except Exception as e:
+        traceback.print_exc()
         mensaje_respuesta = f"⚠️ Ocurrió un error al procesar la respuesta"
 
     await interaction.followup.send(mensaje_respuesta)
