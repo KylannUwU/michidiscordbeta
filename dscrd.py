@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands, tasks
 import requests
-import openai
+from openai import OpenAI  # ✅ Nuevo import compatible con openai>=1.0.0
 from bs4 import BeautifulSoup
 import re
 import traceback
@@ -24,7 +24,7 @@ intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # Inicializar OpenAI
-openai.api_key = OPENAI_API_KEY
+client = OpenAI(api_key=OPENAI_API_KEY)  # ✅ Cliente actualizado
 
 rank_translation = {
     "Iron 1": ("Hierro 1", "🛠️"), "Iron 2": ("Hierro 2", "🛠️"), "Iron 3": ("Hierro 3", "🛠️"),
@@ -64,16 +64,16 @@ async def islive(interaction: discord.Interaction, canal: str):
     else:
         await interaction.response.send_message(f'❌ El canal **{canal}** no está en vivo en este momento.')
 
-# Comando /answer - IA de OpenAI
+# Comando /answer - IA de OpenAI (actualizado)
 @bot.tree.command(name="answer", description="Pregunta algo a la IA y recibe una respuesta.")
 async def answer(interaction: discord.Interaction, pregunta: str):
     await interaction.response.defer()
     try:
-        respuesta = openai.ChatCompletion.create(
+        response = client.chat.completions.create(
             model="gpt-4o",
             messages=[{"role": "user", "content": pregunta}]
         )
-        contenido = respuesta['choices'][0]['message']['content']
+        contenido = response.choices[0].message.content
     except Exception as e:
         traceback.print_exc()
         contenido = "⚠️ Ocurrió un error al procesar la respuesta."
