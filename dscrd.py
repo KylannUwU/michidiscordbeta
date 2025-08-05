@@ -7,6 +7,8 @@ import re
 import traceback
 from dotenv import load_dotenv
 import os
+import json
+import datetime
 
 # Cargar variables de entorno
 load_dotenv()
@@ -18,6 +20,22 @@ TWITCH_CLIENT_ID = os.getenv("TWITCH_CLIENT_ID")
 TWITCH_OAUTH_TOKEN = os.getenv("TWITCH_OAUTH_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TRACKER_API_KEY = os.getenv("TRACKER_API_KEY")
+
+CONFIG_FILE = "config.json"
+
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_config(data):
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+config = load_config()
+
+CLIP_CATEGORY_NAME = "CLIPS EDIT"
 
 # Inicializar el bot
 intents = discord.Intents.all()
@@ -37,6 +55,34 @@ rank_translation = {
     "Radiant": ("Radiante", "🌟"),
 }
 
+class ClipButtons(discord.ui.View):
+    def __init__(self, clip_url):
+        super().__init__(timeout=None)
+        self.clip_url = clip_url
+
+    @discord.ui.button(label="Mover a edit", style=discord.ButtonStyle.success)
+    async def move_to_edit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        guild = interaction.guild
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        channel_name = f"clips-edit-{today}"
+
+        category = discord.utils.get(guild.categories, name=CLIP_CATEGORY_NAME)
+        if not category:
+            category = await guild.create_category(CLIP_CATEGORY_NAME)
+
+        target_channel = discord.utils.get(category.text_channels, name=channel_name)
+        if not target_channel:
+            target_channel = await guild.create_text_channel(channel_name, category=category)
+
+        await target_channel.send(f"🎬 {self.clip_url}")
+        await interaction.message.delete()
+        await interaction.response.send_message(f"✅ Clip movido a #{channel_name}", ephemeral=True)
+
+    @discord.ui.button(label="Eliminar", style=discord.ButtonStyle.danger)
+    async def delete_clip(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.message.delete()
+        await interaction.response.send_message("❌ Clip eliminado", ephemeral=True)
+
 @bot.event
 async def on_ready():
     print(f"✅ Bot conectado como {bot.user}")
@@ -45,6 +91,55 @@ async def on_ready():
         print(f"🔄 Se han registrado {len(synced)} comandos de aplicación.")
     except Exception as e:
         print(f"⚠️ Error al sincronizar comandos: {e}")
+    clean_empty_edit_channels.start()
+
+@bot.tree.command(name="set", description="Configura este canal como canal principal de clips")
+@discord.app_commands.describe(tipo="Selecciona qué quieres configurar (solo acepta 'main')")
+async def set_channel(interaction: discord.Interaction, tipo: str):
+    if tipo.lower() != "main":
+        await interaction.response.send_message("❌ Tipo no reconocido. Usa `/set main`", ephemeral=True)
+        return
+
+    guild_id = str(interaction.guild.id)
+    config[guild_id] = {
+        "suggestion_channel_id": interaction.channel.id
+    }
+    save_config(config)
+    await interaction.response.send_message(f"✅ Este canal ha sido configurado como canal principal de clips.", ephemeral=True)
+
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot or not message.guild:
+        return
+
+    guild_id = str(message.guild.id)
+    if guild_id not in config:
+        return
+
+    suggestion_channel_id = config[guild_id].get("suggestion_channel_id")
+    if message.channel.id != suggestion_channel_id:
+        return
+
+    if "clips.twitch.tv" in message.content:
+        view = ClipButtons(message.content.strip())
+        await message.channel.send(f"📎 Clip detectado:\n{message.content.strip()}", view=view)
+
+    await bot.process_commands(message)
+
+@tasks.loop(minutes=5)
+async def clean_empty_edit_channels():
+    for guild in bot.guilds:
+        category = discord.utils.get(guild.categories, name=CLIP_CATEGORY_NAME)
+        if category:
+            for channel in category.text_channels:
+                try:
+                    async for _ in channel.history(limit=1):
+                        break
+                    else:
+                        await channel.delete()
+                        print(f"🧹 Canal vacío eliminado: {channel.name}")
+                except Exception as e:
+                    print(f"⚠️ Error al revisar canal {channel.name}: {e}")
 
 # Verificar si un canal de Twitch está en vivo
 def is_twitch_live(channel_name):
