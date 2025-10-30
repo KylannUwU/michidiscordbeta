@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands, tasks
 import aiohttp
+import asyncio
 from openai import OpenAI
 from bs4 import BeautifulSoup
 import re
@@ -25,8 +26,25 @@ CONFIG_FILE = "config.json"
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "r") as f:
-            return json.load(f)
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                content = f.read().strip()
+                if not content:  # Si el archivo está vacío
+                    print("⚠️ config.json está vacío, creando uno nuevo...")
+                    return {}
+                return json.loads(content)
+        except json.JSONDecodeError as e:
+            print(f"⚠️ Error al leer config.json: {e}")
+            print("🔄 Creando backup y archivo nuevo...")
+            # Hacer backup del archivo corrupto
+            if os.path.exists(CONFIG_FILE):
+                backup_file = f"{CONFIG_FILE}.backup"
+                os.rename(CONFIG_FILE, backup_file)
+                print(f"✅ Backup guardado en {backup_file}")
+            return {}
+        except Exception as e:
+            print(f"⚠️ Error inesperado al cargar config: {e}")
+            return {}
     return {}
 
 def save_config(data):
