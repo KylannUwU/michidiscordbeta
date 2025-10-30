@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands, tasks
-import requests
-from openai import OpenAI  # ✅ Nuevo import compatible con openai>=1.0.0
+import aiohttp
+from openai import OpenAI
 from bs4 import BeautifulSoup
 import re
 import traceback
@@ -42,7 +42,7 @@ intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # Inicializar OpenAI
-client = OpenAI(api_key=OPENAI_API_KEY)  # ✅ Cliente actualizado
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 rank_translation = {
     "Iron 1": ("Hierro 1", "🛠️"), "Iron 2": ("Hierro 2", "🛠️"), "Iron 3": ("Hierro 3", "🛠️"),
@@ -141,25 +141,41 @@ async def clean_empty_edit_channels():
                 except Exception as e:
                     print(f"⚠️ Error al revisar canal {channel.name}: {e}")
 
-# Verificar si un canal de Twitch está en vivo
-def is_twitch_live(channel_name):
+# Verificar si un canal de Twitch está en vivo (ASYNC)
+async def is_twitch_live(channel_name):
     headers = {
         'Client-ID': TWITCH_CLIENT_ID,
         'Authorization': f'Bearer {TWITCH_OAUTH_TOKEN}'
     }
-    response = requests.get(f'https://api.twitch.tv/helix/streams?user_login={channel_name}', headers=headers)
-    data = response.json()
-    return len(data['data']) > 0
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f'https://api.twitch.tv/helix/streams?user_login={channel_name}',
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return len(data.get('data', [])) > 0
+                return False
+    except Exception as e:
+        print(f"⚠️ Error al verificar Twitch: {e}")
+        return False
 
 # Comando /islive
 @bot.tree.command(name="islive", description="Verifica si un canal de Twitch está en vivo.")
 async def islive(interaction: discord.Interaction, canal: str):
-    if is_twitch_live(canal):
-        await interaction.response.send_message(f'🎥 El canal **{canal}** está en vivo en Twitch: https://www.twitch.tv/{canal}')
-    else:
-        await interaction.response.send_message(f'❌ El canal **{canal}** no está en vivo en este momento.')
+    await interaction.response.defer()
+    try:
+        if await is_twitch_live(canal):
+            await interaction.followup.send(f'🎥 El canal **{canal}** está en vivo en Twitch: https://www.twitch.tv/{canal}')
+        else:
+            await interaction.followup.send(f'❌ El canal **{canal}** no está en vivo en este momento.')
+    except Exception as e:
+        await interaction.followup.send(f"⚠️ Error al verificar el estado del canal: {e}")
+        traceback.print_exc()
 
-# Comando /answer - IA de OpenAI (actualizado)
+# Comando /answer - IA de OpenAI
 @bot.tree.command(name="answer", description="Pregunta algo a la IA y recibe una respuesta.")
 async def answer(interaction: discord.Interaction, pregunta: str):
     await interaction.response.defer()
@@ -174,31 +190,54 @@ async def answer(interaction: discord.Interaction, pregunta: str):
         contenido = "⚠️ Ocurrió un error al procesar la respuesta."
     await interaction.followup.send(contenido)
 
-# Comando /valrank
+# Comando /valrank (ASYNC con aiohttp)
 @bot.tree.command(name="valrank", description="Obtén el rango de un jugador de Valorant.")
 async def valrank(interaction: discord.Interaction, region: str, name: str, tag: str):
+    await interaction.response.defer()
     url = f"https://splendid-groovy-feverfew.glitch.me/valorant/{region}/{name}/{tag}"
+    
     try:
-        response = requests.get(url)
-        if response.status_code == 200:
-            data = response.text.strip()
-            print("Respuesta del servidor:", data)
-            match = re.search(r"([a-zA-Z0-9#]+) \[(.*?)\] : (\d+) RR", data)
-            if match:
-                player_name = match.group(1).split('#')[0]
-                rank = match.group(2)
-                rating = match.group(3)
-                if rank in rank_translation:
-                    translated_rank, emoji = rank_translation[rank]
-                    await interaction.response.send_message(f"Rango de {player_name}: {emoji} {translated_rank}\n📊 Rating: {rating} RR")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                if response.status == 200:
+                    data = await response.text()
+                    data = data.strip()
+                    print("Respuesta del servidor:", data)
+                    match = re.search(r"([a-zA-Z0-9#]+) \[(.*?)\] : (\d+) RR", data)
+                    
+                    if match:
+                        player_name = match.group(1).split('#')[0]
+                        rank = match.group(2)
+                        rating = match.group(3)
+                        
+                        if rank in rank_translation:
+                            translated_rank, emoji = rank_translation[rank]
+                            await interaction.followup.send(
+                                f"Rango de {player_name}: {emoji} {translated_rank}\n📊 Rating: {rating} RR"
+                            )
+                        else:
+                            await interaction.followup.send(
+                                f"Rango de {player_name}: {rank} (No traducido)\n📊 Rating: {rating} RR"
+                            )
+                    else:
+                        await interaction.followup.send(
+                            "❌ No se pudo extraer la información del jugador. Formato inesperado."
+                        )
                 else:
-                    await interaction.response.send_message(f"Rango de {player_name}: {rank} (No traducido)\n📊 Rating: {rating} RR")
-            else:
-                await interaction.response.send_message("❌ No se pudo extraer la información del jugador. Formato inesperado.")
-        else:
-            await interaction.response.send_message(f"❌ Error al consultar: código {response.status_code}")
-    except requests.exceptions.RequestException as e:
-        await interaction.response.send_message(f"⚠️ Error en la solicitud: {e}")
+                    await interaction.followup.send(f"❌ Error al consultar: código {response.status}")
+                    
+    except asyncio.TimeoutError:
+        await interaction.followup.send(
+            "⏱️ La solicitud tardó demasiado tiempo. El servidor puede estar lento. Intenta de nuevo."
+        )
+    except aiohttp.ClientError as e:
+        await interaction.followup.send(
+            "❌ No se pudo conectar al servidor. Puede estar caído o no disponible."
+        )
+        print(f"Error de conexión: {e}")
+    except Exception as e:
+        await interaction.followup.send(f"⚠️ Error inesperado: {e}")
+        traceback.print_exc()
 
 # Tarea en segundo plano (comentada por ahora)
 # @tasks.loop(minutes=5)
